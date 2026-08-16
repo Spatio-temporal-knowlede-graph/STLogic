@@ -1,0 +1,12 @@
+# battlefield_hill395 conversion stats
+n_entities: 5876
+n_relations: 10
+n_timestamps: 6777
+n_landmarks: 600
+ts_scheme: contiguous_per_sector_block
+max_ts_id: 6776
+rows:
+  train: 77850
+  valid: 18620
+  test: 20210
+relations: [emplacedAt, firesAt, follows, movesToward, near, occupies, partOf, reinforces, screens, supports]
