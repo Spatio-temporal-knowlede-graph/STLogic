@@ -17,14 +17,14 @@ class Grapher(object):
         """
 
         self.dataset_dir = dataset_dir
-        self.entity2id = json.load(open(dataset_dir + "entity2id.json"))
-        self.relation2id_old = json.load(open(dataset_dir + "relation2id.json"))
+        self.entity2id = json.load(open(dataset_dir + "entity2id.json", encoding="utf-8"))
+        self.relation2id_old = json.load(open(dataset_dir + "relation2id.json", encoding="utf-8"))
         self.relation2id = self.relation2id_old.copy()
         counter = len(self.relation2id_old)
         for relation in self.relation2id_old:
             self.relation2id["_" + relation] = counter  # Inverse relation
             counter += 1
-        self.ts2id = json.load(open(dataset_dir + "ts2id.json"))
+        self.ts2id = json.load(open(dataset_dir + "ts2id.json", encoding="utf-8"))
         self.id2entity = dict([(v, k) for k, v in self.entity2id.items()])
         self.id2relation = dict([(v, k) for k, v in self.relation2id.items()])
         self.id2ts = dict([(v, k) for k, v in self.ts2id.items()])

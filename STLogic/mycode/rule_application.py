@@ -360,9 +360,13 @@ def save_candidates(
         None
     """
 
+    # Scores arrive as numpy float32 (get_candidates casts for memory). float32 is not
+    # a subclass of float, so json.dump raises on it mid-write and leaves a truncated
+    # file behind -- cast to plain float here.
     all_candidates = {int(k): v for k, v in all_candidates.items()}
     for k in all_candidates:
-        all_candidates[k] = {int(cand): v for cand, v in all_candidates[k].items()}
+        all_candidates[k] = {int(cand): float(v)
+                             for cand, v in all_candidates[k].items()}
     filename = "{0}_cands_r{1}_w{2}_{3}.json".format(
         rules_file[:-11], rule_lengths, window, score_func_str
     )

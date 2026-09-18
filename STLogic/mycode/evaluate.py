@@ -86,7 +86,7 @@ learn_edges = store_edges(data.train_idx)
 obj_dist, rel_obj_dist = calculate_obj_distribution(data.train_idx, learn_edges)
 
 
-all_candidates = json.load(open(dir_path + candidates_file))
+all_candidates = json.load(open(dir_path + candidates_file, encoding="utf-8"))
 all_candidates = {int(k): v for k, v in all_candidates.items()}
 for k in all_candidates:
     all_candidates[k] = {int(cand): v for cand, v in all_candidates[k].items()}

@@ -29,6 +29,11 @@ parser.add_argument(
 parser.add_argument("--type_cond", action="store_true")  # ② type-conditioned sigma
 parser.add_argument("--fmin", default=0.0, type=float)    # ③ tie-gating clamp [0,1]
 parser.add_argument("--backoff", action="store_true")     # ① spatial candidate backoff
+# Forecasting horizon in TIMESTAMP IDS (not seconds). The query stays at its real
+# time t; the model may only use what was known at t - horizon. On a uniform tick
+# grid this is horizon_seconds / stride (VR-Forces s10: 300s -> 30). 0 = vanilla
+# TLogic, byte-identical, which is the regression check.
+parser.add_argument("--horizon", default=0, type=int)
 parsed = vars(parser.parse_args())
 
 dataset = parsed["dataset"]
@@ -43,6 +48,7 @@ feature_set = FEATURE_SETS[spatial_mode]
 type_cond = parsed["type_cond"]
 f_min = parsed["fmin"]
 do_backoff = parsed["backoff"]
+horizon = parsed["horizon"]
 
 dataset_dir = "../data/" + dataset + "/"
 dir_path = "../output/" + dataset + "/"
@@ -69,9 +75,13 @@ if do_backoff:
             sector2ents.setdefault(sec, []).append(eid)
 
 
-def backoff_for(test_query):
-    """① candidates for a no-rule-candidate query, ranked by relation spatial fit."""
-    sub, rel, ts = int(test_query[0]), int(test_query[1]), int(test_query[3])
+def backoff_for(test_query, obs_ts):
+    """① candidates for a no-rule-candidate query, ranked by relation spatial fit.
+
+    `obs_ts` is the observation time (query ts minus the forecasting horizon), so
+    candidate positions are read from what was known then, never from the future.
+    """
+    sub, rel, ts = int(test_query[0]), int(test_query[1]), int(obs_ts)
     sec = id2sector.get(sub)
     if sec is None:
         return {}
@@ -79,8 +89,10 @@ def backoff_for(test_query):
         positions, rel_spatial, feature_set, sub, rel, ts,
         sector2ents.get(sec, []), topk=top_k,
     )
+
+
 test_data = data.test_idx if (parsed["test_data"] == "test") else data.valid_idx
-rules_dict = json.load(open(dir_path + rules_file))
+rules_dict = json.load(open(dir_path + rules_file, encoding="utf-8"))
 rules_dict = {int(k): v for k, v in rules_dict.items()}
 print("Rules statistics:")
 rules_statistics(rules_dict)
@@ -120,7 +132,10 @@ def apply_rules(i, num_queries):
         test_queries_idx = range(i * num_queries, len(test_data))
 
     cur_ts = test_data[test_queries_idx[0]][3]
-    edges = ra.get_window_edges(data.all_idx, cur_ts, learn_edges, window)
+    # Observation time: everything the model is allowed to see happens strictly
+    # before it. horizon=0 -> obs_ts == cur_ts -> vanilla TLogic.
+    obs_ts = cur_ts - horizon
+    edges = ra.get_window_edges(data.all_idx, obs_ts, learn_edges, window)
 
     it_start = time.time()
     for j in test_queries_idx:
@@ -129,7 +144,8 @@ def apply_rules(i, num_queries):
 
         if test_query[3] != cur_ts:
             cur_ts = test_query[3]
-            edges = ra.get_window_edges(data.all_idx, cur_ts, learn_edges, window)
+            obs_ts = cur_ts - horizon
+            edges = ra.get_window_edges(data.all_idx, obs_ts, learn_edges, window)
 
         if test_query[1] in rules_dict:
             dicts_idx = list(range(len(args)))
@@ -147,7 +163,7 @@ def apply_rules(i, num_queries):
                         cands_dict = ra.get_candidates(
                             rule,
                             rule_walks,
-                            cur_ts,
+                            obs_ts,
                             cands_dict,
                             score_func,
                             args,
@@ -184,7 +200,7 @@ def apply_rules(i, num_queries):
                     # Calculate noisy-or scores
                     scores = list(
                         map(
-                            lambda x: 1 - np.product(1 - np.array(x)),
+                            lambda x: 1 - np.prod(1 - np.array(x)),
                             cands_dict[s].values(),
                         )
                     )
@@ -194,7 +210,7 @@ def apply_rules(i, num_queries):
                     )
                     all_candidates[s][j] = noisy_or_cands
             else:  # No candidates found by applying rules
-                bo = backoff_for(test_query) if do_backoff else {}
+                bo = backoff_for(test_query, obs_ts) if do_backoff else {}
                 if bo:
                     for s in range(len(args)):
                         all_candidates[s][j] = dict(bo)
@@ -204,7 +220,7 @@ def apply_rules(i, num_queries):
                         all_candidates[s][j] = dict()
 
         else:  # No rules exist for this relation
-            bo = backoff_for(test_query) if do_backoff else {}
+            bo = backoff_for(test_query, obs_ts) if do_backoff else {}
             if bo:
                 for s in range(len(args)):
                     all_candidates[s][j] = dict(bo)
@@ -252,6 +268,7 @@ for s in range(len(args)):
         score_func.__name__ + str(args[s]) + "_sp-" + spatial_mode
         + ("_tc" if type_cond else "") + ("_fm" + str(f_min) if f_min else "")
         + ("_bo" if do_backoff else "")
+        + ("_h" + str(horizon) if horizon else "")
     )
     score_func_str = score_func_str.replace(" ", "")
     ra.save_candidates(

@@ -52,8 +52,30 @@
   reinforces, screens, supports.
 - 부속: `entity2id/relation2id/ts2id.json`, `landmarks.tsv`, `stats.yaml`.
 
-### VR-Forces (VTMAK) 데이터
-- `STLogic/data/VTMAK/` — 빈 폴더. 추후 최종 showcase용으로 투입 예정.
+### VR-Forces (VTMAK) 데이터 — ver2.0, 2026-09-14 투입
+- 원천: `STLogic/dataset/VR-Forces/` — `UAV1~5_ver2.0.csv`, `ground_truth_ver2.0.csv`
+  (68열, 1Hz, 약 1.0GB). 시나리오 자산은 `STKG_Experiments/VR-Forces/`.
+- **premade 5컬럼 변환**: `tools/convert_vrforces.py` → `data/VR-Forces/`
+  (`subject,predicate,object,timestamp,location="(lat, lon)"`). 사람이 읽는 중간
+  산출물이라 grapher가 파싱하지 않는 괄호 형식을 의도적으로 유지.
+- **TLogic/STLogic 데이터셋**: `tools/build_vrforces_dataset.py` →
+  `data/VR-Forces_{ground_truth,uav}_s10/`. 좌표는 **local ENU 미터**(lat/lon 도를
+  그대로 쓰면 거리 7% 왜곡·방위는 더 크게 틀어짐). landmark 좌표는
+  `VR-Forces/config/battlefield_layout.json`, 엔티티 타입·부대는
+  `VR-Forces/build/registry/master_entities.csv`에서 가져온다(하이픈 제거로 323/323 매칭).
+- GT 규모(stride 10s): 틱 173(train 121 / valid 25 / test 27), 엔티티 341,
+  **관계 4종**, landmark 18, 엣지 train 29,885 / valid 5,691 / test 5,170.
+
+#### ⚠️ 이 데이터의 성질 (방법론을 좌우함)
+- 엣지 496,639개인데 **distinct triple은 522개** — Data Logger가 tick마다 '수행 중인
+  task'를 찍어 같은 사실이 934배 중복된다. 1Hz 원본에서 **실제 object 전이는 158건뿐**
+  (전부 `move to`; Fire-Weapon·FFE·Provide-Suppressive-Fire-Loc은 전이 0건).
+- 전이 158건은 **146 subject에 고루** 퍼져 있다(1회 139명, 상위 5명 점유 9.5%).
+  LOC 전이 그래프는 24쌍. 즉 편중 문제는 없다.
+- 단일 장면이라 **inductive 설정이 사라졌다**. hill395의 "임베딩 모델 실행 불가" 논지는
+  이 데이터엔 적용되지 않는 대신, 임베딩 비교군이 드디어 돌아간다(§6-0(나) 해소).
+- UAV는 부분 관측: 개별 33~60%, 합집합 216/333, **117개는 아무 UAV도 못 봄**.
+  전이 시점 기준 실시간 관측은 1/158(1%), 마지막 관측 후 경과 중앙 31틱·최대 609틱.
 
 ---
 
@@ -177,7 +199,52 @@
   **핵심 발견: 우리 inductive(섹터별 네임스페이싱) 설계상 임베딩 모델은 test 엔티티 임베딩이 없어 실행 불가**
   → 비교군 착수 전 inductive 프로토콜(A/B/C) 결정 필요(§6-0). 진행 보류, 사용자 결정 대기.
 
-## STLogic 최종 결과 (test, baseline 0.5464 대비)
+### 2026-09-14 — VR-Forces ver2.0 투입, fixed-horizon 평가로 전환
+- **문제 진단**: tick 단위 `(s,r,?,t)` 평가는 성립하지 않는다. persistence(직전 답 복사)가
+  MRR 0.9997 — 공간이든 무엇이든 올릴 자리가 없다. transition만 평가하면 시간 분할 시
+  test 전이가 2~3건이라 통계가 안 나온다.
+- **해결**: 예측 대상은 원래대로 `(s,r,?,t)`로 두되 **forecasting horizon Δ**를 도입.
+  쿼리는 실제 시각 t에 그대로 두고, 모델이 볼 수 있는 것은 `t-Δ`까지로 자른다.
+  `apply.py --horizon`(단위: 틱). 누수 지점 셋 — 창 컷오프·공간 기준 시각·시간 근접성
+  점수 — 에 **모두** `obs_ts = ts - horizon`을 적용. `--horizon 0`은 순정과 동일 경로.
+- **평가기 신설** `mycode/evaluate_horizon.py`: aggregate + **hard 부분집합**(관측 시점과
+  답이 달라진 쿼리) + **클러스터 부트스트랩 CI**(전이 1건이 최대 Δ개의 상관된 쿼리를
+  낳으므로 독립 단위는 쿼리가 아니라 전이).
+
+**TLogic baseline (GT, stride 10s, `-l 1 2 3 -w 3`, 규칙 22개, test 쿼리 10,340)**
+
+| horizon | persistence H@1 | TLogic MRR (all) | hard n | **hard MRR** | hard 클러스터 | hard MRR 95% CI |
+|---|---:|---:|---:|---:|---:|---|
+| 0s    | 1.0000 | 0.9994 | 0 | — | 0 | — |
+| 30s   | 0.9983 | 0.9977 | 12 | 0.0029 | 5 | [0.0029, 0.0029] |
+| 60s   | 0.9965 | 0.9960 | 24 | 0.0029 | 5 | [0.0029, 0.0029] |
+| 120s  | 0.9930 | 0.9927 | 48 | 0.0029 | 5 | [0.0029, 0.0029] |
+| 300s  | 0.9677 | 0.9653 | 230 | 0.0029 | 27 | [0.0029, 0.0029] |
+| 600s  | 0.8584 | **0.8358** | 1,170 | **0.0110** | 134 | [0.0079, 0.0147] |
+
+- **horizon이 길어질수록 헤드룸이 열린다**: hard 비율 0% → 11.3%, 600s에서 hard 쿼리
+  1,170건 / 독립 클러스터 134개로 통계가 성립한다.
+- **600s에서 TLogic은 persistence보다 못하다**(0.8358 < 0.8584). 시간 규칙이 학습한 최상위
+  규칙이 `move to(X,Y,t) :- move to(X,Y,t')` conf 0.98 — persistence 그 자체라, 답이 바뀌는
+  구간에서 오히려 해가 된다.
+- **핵심 진단 — 병목은 재순위화가 아니라 후보 생성이다**: 600s hard 쿼리 1,170건 중
+  **98.4%(1,151건)에서 정답이 후보 목록에 아예 없다**. 후보 개수 중앙값 2개.
+  hill395에서 이득이 ①backoff·centroid(후보 생성)에서 나왔던 것과 같은 구조이고, 정도는
+  훨씬 심하다. 답 후보가 landmark 18개뿐이라 공간 기반 생성기는 승산이 크다.
+- 따라서 STLogic 실험은 거리·접근율·heading을 **재순위화 항이 아니라 후보 생성기**로
+  놓는 설계가 1순위다.
+
+#### 실행 중 고친 버그 (모두 잠복 상태였음)
+- `grapher.py`: id JSON을 인코딩 지정 없이 열어 Windows 기본 cp949로 읽음 → 비ASCII
+  엔티티명(한글 LOC)에서 즉사. hill395는 전부 ASCII라 드러나지 않았다.
+- `rule_application.save_candidates`: 점수가 numpy `float32`라 `json.dump`가 중간에
+  예외를 내고 **14바이트짜리 잘린 파일**을 남김. 조용한 데이터 손실이라 특히 위험.
+- `apply.py`: `np.product` → `np.prod` (numpy 2.x에서 제거됨). `TLogic/`은 순정 보존.
+- 후보 파일명에 horizon이 없어 스윕이 서로 덮어씀 → 파일명에 `_h<N>` 추가.
+- `-w 0`(과거 전체)은 길이-3 규칙 조인이 28GiB를 요구하며 터진다. 단일 장면이라 tail이
+  landmark 18개로 수렴해 워크가 팬아웃하기 때문. 유계 창(`-w 3`)으로 회피.
+
+## STLogic 최종 결과 (battlefield_hill395, test, baseline 0.5464 대비)
 | config | MRR | Hits@1 | Hits@3 | Hits@10 | no-cand |
 |---|---|---|---|---|---|
 | baseline TLogic | 0.5464 | 0.5156 | 0.5482 | 0.6117 | 11,118 |
