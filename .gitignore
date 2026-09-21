@@ -13,10 +13,7 @@ Thumbs.db
 .idea/
 .vscode/
 
-# 원천 데이터와 재생성 가능한 산출물 — 저장소에 넣지 않는다.
-# ground_truth_ver2.0.csv 한 파일이 783MB로 GitHub 100MB 한도를 넘는다.
+# VR-Forces 원본 로그만 제외한다.
+# ground_truth_ver2.0.csv 한 파일이 782MB로 GitHub 파일당 100MB 하드 한도를 넘어
+# 일반 push로는 올릴 수 없다. 필요하면 Git LFS + 유료 데이터팩으로 별도 관리할 것.
 dataset/VR-Forces/
-dataset/battlefield_hill395_large/
-STLogic/data/VR-Forces/
-STLogic/data/VR-Forces_*/
-STLogic/output/VR-Forces_*/
