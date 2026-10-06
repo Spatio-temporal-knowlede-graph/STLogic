@@ -1,4 +1,5 @@
-import json
+import bisect
+import datetime as dt
 import json
 import time
 import argparse
@@ -34,6 +35,20 @@ parser.add_argument("--backoff", action="store_true")     # ① spatial candidat
 # grid this is horizon_seconds / stride (VR-Forces s10: 300s -> 30). 0 = vanilla
 # TLogic, byte-identical, which is the regression check.
 parser.add_argument("--horizon", default=0, type=int)
+# Exact-seconds horizon. `--horizon` above subtracts TICK IDS, which only equals
+# the intended gap on a perfectly uniform grid. VR-Forces has four 20 s gaps, so
+# `--horizon 60` actually ranged over 610-630 s. When this is set it takes
+# precedence and the visible set is exactly {t : epoch(t) <= epoch(q) - seconds}.
+parser.add_argument("--horizon-seconds", default=0, type=int)
+# RQ2: query/label come from -d, but the VISIBLE HISTORY rules ground against
+# comes from --history. Without the split, pointing -d at ground truth hands the
+# temporal side a complete view and the partial-observation experiment collapses.
+# Omit it and history == -d, i.e. exactly the previous behaviour.
+parser.add_argument("--history", default=None, type=str)
+# Score-function settings to emit in one pass, "lambda,alpha" each (score_12 takes
+# [lambda, alpha]). TLogic's own code already loops over a list of these for tuning;
+# this only exposes it. Default is TLogic's best, [[0.1, 0.5]].
+parser.add_argument("--score-args", default=["0.1,0.5"], type=str, nargs="+")
 parsed = vars(parser.parse_args())
 
 dataset = parsed["dataset"]
@@ -49,10 +64,51 @@ type_cond = parsed["type_cond"]
 f_min = parsed["fmin"]
 do_backoff = parsed["backoff"]
 horizon = parsed["horizon"]
+horizon_s = parsed["horizon_seconds"]
+
+
+def _build_obs_lookup(grapher):
+    """tick id -> (obs tick inclusive, exclusive bound for get_window_edges).
+
+    Two values because they are used differently: positions are read AT obs, while
+    `get_window_edges` filters `t < bound`. Handing the same number to both would
+    make the edge window one tick tighter than the position window.
+    """
+    ticks = sorted(int(k) for k in grapher.id2ts)
+    epochs = [int(dt.datetime.fromisoformat(grapher.id2ts[t]).timestamp())
+              for t in ticks]
+    out = {}
+    for i, t in enumerate(ticks):
+        cut = epochs[i] - horizon_s
+        j = bisect.bisect_right(epochs, cut) - 1     # last tick at or before cut
+        obs = ticks[j] if j >= 0 else ticks[0]
+        out[t] = (obs, obs + 1)
+    return out
+
+
+_OBS = None        # built once the Grapher exists (see below)
+
+
+def observation_ts(cur_ts):
+    """(obs tick, exclusive bound). Falls back to tick subtraction when
+    --horizon-seconds is not given, so `--horizon N` stays byte-identical."""
+    if _OBS is None:
+        return cur_ts - horizon, cur_ts - horizon
+    return _OBS[int(cur_ts)]
+history_dataset = parsed["history"] or dataset
 
 dataset_dir = "../data/" + dataset + "/"
 dir_path = "../output/" + dataset + "/"
-data = Grapher(dataset_dir)
+data = Grapher(dataset_dir)          # query graph: test queries and labels
+# History graph: visible edges for rule grounding. Same id space by construction
+# (build_vrforces_dataset.py --reuse-ids), so rules transfer unchanged.
+history = data if history_dataset == dataset else Grapher("../data/" + history_dataset + "/")
+
+if horizon_s:
+    _OBS = _build_obs_lookup(data)
+if history is not data:
+    print("history graph = %s (edges %d vs query graph %d)"
+          % (history_dataset, len(history.all_idx), len(data.all_idx)))
 # Unit membership (for centroid positions) from ALL splits so test-sector units are
 # covered — this is background order-of-battle structure, not a forecasting target.
 _unit_members = sc.build_unit_members(data.all_idx, data.relation2id.get("partOf"))
@@ -101,11 +157,11 @@ rules_dict = ra.filter_rules(
 )
 print("Rules statistics after pruning:")
 rules_statistics(rules_dict)
-learn_edges = store_edges(data.train_idx)
+learn_edges = store_edges(history.train_idx)
 
 score_func = score_12
 # It is possible to specify a list of list of arguments for tuning
-args = [[0.1, 0.5]]
+args = [[float(x) for x in a.split(",")] for a in parsed["score_args"]]
 
 
 def apply_rules(i, num_queries):
@@ -134,8 +190,8 @@ def apply_rules(i, num_queries):
     cur_ts = test_data[test_queries_idx[0]][3]
     # Observation time: everything the model is allowed to see happens strictly
     # before it. horizon=0 -> obs_ts == cur_ts -> vanilla TLogic.
-    obs_ts = cur_ts - horizon
-    edges = ra.get_window_edges(data.all_idx, obs_ts, learn_edges, window)
+    obs_ts, obs_bound = observation_ts(cur_ts)
+    edges = ra.get_window_edges(history.all_idx, obs_bound, learn_edges, window)
 
     it_start = time.time()
     for j in test_queries_idx:
@@ -144,8 +200,8 @@ def apply_rules(i, num_queries):
 
         if test_query[3] != cur_ts:
             cur_ts = test_query[3]
-            obs_ts = cur_ts - horizon
-            edges = ra.get_window_edges(data.all_idx, obs_ts, learn_edges, window)
+            obs_ts, obs_bound = observation_ts(cur_ts)
+            edges = ra.get_window_edges(history.all_idx, obs_bound, learn_edges, window)
 
         if test_query[1] in rules_dict:
             dicts_idx = list(range(len(args)))
@@ -268,7 +324,10 @@ for s in range(len(args)):
         score_func.__name__ + str(args[s]) + "_sp-" + spatial_mode
         + ("_tc" if type_cond else "") + ("_fm" + str(f_min) if f_min else "")
         + ("_bo" if do_backoff else "")
-        + ("_h" + str(horizon) if horizon else "")
+        + ("_h%ds" % horizon_s if horizon_s else ("_h" + str(horizon) if horizon else ""))
+        + ("_k%d" % top_k if top_k != 20 else "")
+        + ("_" + parsed["test_data"] if parsed["test_data"] != "test" else "")
+        + ("_hist-" + history_dataset if history_dataset != dataset else "")
     )
     score_func_str = score_func_str.replace(" ", "")
     ra.save_candidates(

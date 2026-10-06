@@ -19,6 +19,8 @@ Usage:
     python evaluate_horizon.py -d <dataset> -c <candidates.json> --horizon <ticks>
 """
 import argparse
+import bisect
+import datetime as dtm
 import json
 import random
 
@@ -116,11 +118,38 @@ def main():
     ap.add_argument("--dataset", "-d", required=True)
     ap.add_argument("--candidates", "-c", required=True)
     ap.add_argument("--horizon", type=int, default=0)
+    # Must match how the candidates were generated. apply.py --horizon subtracts
+    # TICK IDS; --horizon-seconds uses real time. Mixing them silently redefines
+    # the HARD subset: measured, evaluating seconds-generated candidates with a
+    # tick-defined cutoff moved TLogic HARD from 0.0110 to 0.1055, because the
+    # model had already seen the new answer at ticks the evaluator still called
+    # "before the change".
+    ap.add_argument("--horizon-seconds", type=int, default=0)
     ap.add_argument("--test_data", default="test")
     ap.add_argument("--n_boot", type=int, default=2000)
+    # Average is the primary convention across every model in the comparison: a
+    # dense scorer breaks ties by accident of initialisation while a rule model
+    # produces genuine plateaus, and "best" rewards the latter for nothing.
+    ap.add_argument("--setting", choices=["best", "average", "worst"],
+                    default="average")
     a = ap.parse_args()
 
     data = Grapher("../data/" + a.dataset + "/")
+
+    def cutoff_of(ts):
+        """Tick whose facts the model was allowed to see for a query at `ts`."""
+        if not a.horizon_seconds:
+            return ts - a.horizon
+        return _obs[int(ts)]
+
+    _obs = {}
+    if a.horizon_seconds:
+        ticks = sorted(int(k) for k in data.id2ts)
+        eps = [int(dtm.datetime.fromisoformat(data.id2ts[t]).timestamp())
+               for t in ticks]
+        for i, t in enumerate(ticks):
+            j = bisect.bisect_right(eps, eps[i] - a.horizon_seconds) - 1
+            _obs[t] = ticks[j] if j >= 0 else ticks[0]
     num_entities = len(data.id2entity)
     test_data = data.test_idx if a.test_data == "test" else data.valid_idx
     learn_edges = store_edges(data.train_idx)
@@ -139,10 +168,10 @@ def main():
         c = cands[i] if cands.get(i) else baseline_candidates(
             rel, learn_edges, obj_dist, rel_obj_dist)
         c = filter_candidates(q, dict(c), test_data)
-        rank = calculate_rank(obj, c, num_entities)
+        rank = calculate_rank(obj, c, num_entities, a.setting)
         all_ranks.append(rank)
 
-        known = answers_at(index, sub, rel, ts - a.horizon)
+        known = answers_at(index, sub, rel, cutoff_of(ts))
         if not known:
             unseen += 1
             continue
@@ -153,7 +182,9 @@ def main():
 
     lo, hi = cluster_bootstrap(by_cluster, a.n_boot)
     ov, hd = metrics(all_ranks), metrics(hard_ranks)
-    print("dataset=%s  horizon=%d ticks  candidates=%s" % (a.dataset, a.horizon, a.candidates))
+    print("dataset=%s  horizon=%s  ties=%s  candidates=%s"
+          % (a.dataset, ("%ds" % a.horizon_seconds) if a.horizon_seconds
+             else ("%d ticks" % a.horizon), a.setting, a.candidates))
     print("  %-10s %7s %8s %8s %8s %8s" % ("subset", "n", "MRR", "H@1", "H@3", "H@10"))
     print("  %-10s %7d %8.4f %8.4f %8.4f %8.4f"
           % ("all", ov["n"], ov["mrr"], ov["h1"], ov["h3"], ov["h10"]))

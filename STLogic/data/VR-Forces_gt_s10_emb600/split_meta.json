@@ -1,0 +1,27 @@
+{
+  "mode": "embargo",
+  "embargo_seconds": 600,
+  "roles": {
+    "train.txt": "learning (rules + spatial model)",
+    "valid.txt": "EMBARGO -- evidence only, never learned or evaluated",
+    "test.txt": "evaluation"
+  },
+  "fit_ticks": [
+    0,
+    76
+  ],
+  "calib_ticks": [
+    77,
+    89
+  ],
+  "embargo_ticks": [
+    90,
+    145
+  ],
+  "test_ticks": [
+    146,
+    172
+  ],
+  "train_end_epoch": 1789101402,
+  "min_test_cutoff_epoch": 1789101402
+}

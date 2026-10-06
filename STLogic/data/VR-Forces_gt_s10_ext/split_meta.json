@@ -1,0 +1,54 @@
+{
+  "mode": "embargo+spatial",
+  "embargo_seconds": 600,
+  "roles": {
+    "train.txt": "learning (rules + spatial model)",
+    "valid.txt": "validation / calibration",
+    "embargo.txt": "EMBARGO -- evidence only, never learned or evaluated",
+    "test.txt": "evaluation; task relations only"
+  },
+  "spatial_relations": {
+    "source": "build\\spatial\\ver2.0_relations.csv",
+    "policy": "interval START only; excluded from test.txt",
+    "predicates": [
+      "behind",
+      "in_front_of",
+      "in_range_of",
+      "next_to"
+    ],
+    "min_support": 1,
+    "counts": {
+      "behind": 35427,
+      "in_front_of": 42602,
+      "in_range_of": 21742,
+      "next_to": 8157
+    },
+    "dropped_in_test_period": 6187
+  },
+  "task_relations": {
+    "move to": 37443,
+    "FFE-on-Location": 182,
+    "Fire-Weapon": 3109,
+    "Provide-Suppressive-Fire-Loc": 12
+  },
+  "ticks": {
+    "train": [
+      0,
+      76
+    ],
+    "valid": [
+      77,
+      89
+    ],
+    "embargo": [
+      90,
+      145
+    ],
+    "test": [
+      146,
+      172
+    ]
+  },
+  "train_end_epoch": 1789101402,
+  "min_test_cutoff_epoch": 1789101402
+}

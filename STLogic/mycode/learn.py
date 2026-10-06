@@ -17,6 +17,9 @@ parser.add_argument("--num_walks", "-n", default="100", type=int)
 parser.add_argument("--transition_distr", default="exp", type=str)
 parser.add_argument("--num_processes", "-p", default=1, type=int)
 parser.add_argument("--seed", "-s", default=None, type=int)
+parser.add_argument("--head-relations", default=None, type=str,
+                    help="comma-separated relation names to learn rules FOR "
+                         "(inverses included automatically); default: all")
 parsed = vars(parser.parse_args())
 
 dataset = parsed["dataset"]
@@ -37,7 +40,23 @@ positions = PositionIndex(
 rl = Rule_Learner(
     temporal_walk.edges, data.id2relation, data.inv_relation_id, dataset, positions
 )
-all_relations = sorted(temporal_walk.edges)  # Learn for all relations
+# Restrict which HEAD relations get rules. The extended dataset adds derived
+# spatial relations as body evidence, but they are never queried -- they are kept
+# out of test.txt on purpose. Learning rules to predict them spends the walk budget
+# on heads nobody asks about: measured, 341 of 403 rules (85%) had a spatial head
+# while queries with no candidate at all went from 294 to 5,290. Body atoms are
+# unaffected; walks still traverse spatial edges freely.
+head_filter = parsed["head_relations"]
+if head_filter:
+    wanted = set(head_filter.split(","))
+    keep = {r for r in temporal_walk.edges
+            if data.id2relation[r].lstrip("_") in wanted}
+    all_relations = sorted(keep)
+    print("head 관계 %d/%d 로 제한: %s"
+          % (len(all_relations), len(temporal_walk.edges),
+             sorted({data.id2relation[r] for r in all_relations})))
+else:
+    all_relations = sorted(temporal_walk.edges)  # Learn for all relations
 
 
 def learn_rules(i, num_relations):
@@ -55,11 +74,14 @@ def learn_rules(i, num_relations):
     if seed:
         np.random.seed(seed)
 
-    num_rest_relations = len(all_relations) - (i + 1) * num_relations
-    if num_rest_relations >= num_relations:
-        relations_idx = range(i * num_relations, (i + 1) * num_relations)
-    else:
-        relations_idx = range(i * num_relations, len(all_relations))
+    # The last process takes whatever is left. The original rule only did so when
+    # the remainder was smaller than one share, so with 8 relations and -p 6
+    # (share 1, remainder 2) relations 6 and 7 -- `_Provide-Suppressive-Fire-Loc`
+    # and `_move to` -- were assigned to nobody and silently got no rules.
+    n = len(all_relations)
+    start = min(i * num_relations, n)
+    end = n if i == num_processes - 1 else min((i + 1) * num_relations, n)
+    relations_idx = range(start, end)
 
     num_rules = [0]
     for k in relations_idx:
@@ -89,7 +111,11 @@ def learn_rules(i, num_relations):
 
 
 start = time.time()
-num_relations = len(all_relations) // num_processes
+# max(1, ...) because integer division silently yields 0 when there are fewer
+# relations than processes, and then every worker gets an empty range and learns
+# nothing. Hit on the embargo split: its shorter train period contains only 6 of
+# the 8 relations, so `-p 8` produced zero rules with no error.
+num_relations = max(1, len(all_relations) // num_processes)
 output = Parallel(n_jobs=num_processes)(
     delayed(learn_rules)(i, num_relations) for i in range(num_processes)
 )

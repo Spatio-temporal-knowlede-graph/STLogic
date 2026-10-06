@@ -1,0 +1,10 @@
+{
+ "FFE-on-Location": 0,
+ "Fire-Weapon": 1,
+ "Provide-Suppressive-Fire-Loc": 2,
+ "behind": 3,
+ "in_front_of": 4,
+ "in_range_of": 5,
+ "move to": 6,
+ "next_to": 7
+}

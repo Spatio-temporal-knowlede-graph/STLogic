@@ -1,5 +1,6 @@
-import os
 import json
+import os
+
 import numpy as np
 
 
@@ -42,7 +43,15 @@ class Grapher(object):
         self.train_idx = self.create_store("train.txt")
         self.valid_idx = self.create_store("valid.txt")
         self.test_idx = self.create_store("test.txt")
-        self.all_idx = np.vstack((self.train_idx, self.valid_idx, self.test_idx))
+        # STLogic: optional embargo block. Facts the model must NOT learn from, but
+        # which later test queries are still allowed to observe (their cutoff falls
+        # inside it). Kept out of train/valid/test so it is never learned and never
+        # evaluated, yet present in all_idx so rule grounding can see it.
+        self.embargo_idx = self.create_store("embargo.txt", optional=True)
+        parts = [self.train_idx, self.valid_idx, self.test_idx]
+        if len(self.embargo_idx):
+            parts.append(self.embargo_idx)
+        self.all_idx = np.vstack(parts)
 
         # STLogic: static landmark coordinates from landmarks.tsv (optional file).
         self.landmark_pos = self.load_landmarks()
@@ -80,7 +89,7 @@ class Grapher(object):
                     )
         return landmark_pos
 
-    def create_store(self, file):
+    def create_store(self, file, optional=False):
         """
         Store the quadruples from the file as indices.
         The quadruples in the file should be in the format "subject\trelation\tobject\ttimestamp\n".
@@ -92,7 +101,10 @@ class Grapher(object):
             store_idx (np.ndarray): indices of quadruples
         """
 
-        with open(self.dataset_dir + file, "r", encoding="utf-8") as f:
+        path = self.dataset_dir + file
+        if optional and not os.path.exists(path):
+            return np.zeros((0, 4), dtype=int)
+        with open(path, "r", encoding="utf-8") as f:
             quads = f.readlines()
         store = self.split_quads(quads)
         store_idx = self.map_to_idx(store)
